@@ -1,17 +1,17 @@
 import asyncio
 from telethon import TelegramClient, events
+from telethon.sessions import StringSession
 import json
 import os
 from datetime import datetime
 
 API_ID = int(os.getenv("API_ID"))
 API_HASH = os.getenv("API_HASH")
-SESSION_NAME = os.getenv("SESSION_NAME", "anon")
-
+SESSION = os.getenv("SESSION")
 DELAY_MINUTES = int(os.getenv("DELAY_MINUTES", 5))
 QUEUE_FILE = "queue.json"
 
-client = TelegramClient(SESSION_NAME, API_ID, API_HASH)
+client = TelegramClient(StringSession(SESSION), API_ID, API_HASH)
 
 if not os.path.exists(QUEUE_FILE):
     with open(QUEUE_FILE, "w") as f:
@@ -55,20 +55,9 @@ async def help_handler(event):
             "📌 Команды:\n"
             ".add — добавить сообщение в очередь (ответом)\n"
             ".delete — удалить последнее сообщение\n"
+            ".target — добавить чат в цели (ответом)\n"
             ".help — показать справку"
         )
-
-async def spam_loop():
-    while True:
-        queue = load_queue()
-        if queue["messages"] and queue["targets"]:
-            for msg_id in queue["messages"]:
-                for chat_id in queue["targets"]:
-                    try:
-                        await client.forward_messages(chat_id, msg_id, entity="me")
-                    except Exception as e:
-                        print(f"[{datetime.now()}] Ошибка отправки: {e}")
-        await asyncio.sleep(DELAY_MINUTES * 60)
 
 @client.on(events.NewMessage(incoming=True, pattern=r"\.target"))
 async def target_handler(event):
@@ -85,8 +74,24 @@ async def target_handler(event):
         else:
             await event.reply("❌ Ответь на сообщение из нужного чата.")
 
+async def spam_loop():
+    while True:
+        queue = load_queue()
+        if queue["messages"] and queue["targets"]:
+            for msg_id in queue["messages"]:
+                for chat_id in queue["targets"]:
+                    try:
+                        await client.forward_messages(chat_id, msg_id, entity="me")
+                    except Exception as e:
+                        print(f"[{datetime.now()}] Ошибка отправки: {e}")
+        await asyncio.sleep(DELAY_MINUTES * 60)
+
 async def main():
-    await client.start()
+    await client.connect()
+    if not await client.is_user_authorized():
+        print("❌ Сессия не авторизована!")
+        return
+
     print("✅ Бот запущен.")
     await spam_loop()
 
