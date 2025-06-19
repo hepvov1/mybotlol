@@ -1,99 +1,145 @@
-import asyncio
+import asyncio, re, json, os
 from telethon import TelegramClient, events
 from telethon.sessions import StringSession
-import json
-import os
-from datetime import datetime
+from telethon.tl.functions.messages import GetDialogsRequest
+from telethon.tl.types import InputPeerEmpty
 
-API_ID = int(os.getenv("API_ID"))
-API_HASH = os.getenv("API_HASH")
-SESSION = os.getenv("SESSION")
-DELAY_MINUTES = int(os.getenv("DELAY_MINUTES", 5))
-QUEUE_FILE = "queue.json"
+# 🔐 Настройки
+API_ID = 28949784
+API_HASH = '07accbfb7a4d822e85068eb4ef468647'
+SESSION = '1ApWapzMBu1mC7NROz6MD8405nz8KTtomJ0Ql-1msuUC3BHb3PEr4q6bTxlCvAdvYxw4aS9vmffu4SOVEqWCQ_AMy16tgZDjQLnBisWS3cOUlLPIThXT8EKqOqr6mrPmkOD2jNiIhMra-A8JAWQ1bo7g0EayoQkTv2VBGiaQ0IWqi3DASOlM7FnIFxTdr34Cv7WJJED1ajtRANBciOg-AAaEq0HodAmQ4KmLOdlec3jRHVRSSkIffyecEE0AUeX0mzZAqtC5LWFdjNfrblB9YgOTz4FKHS9kPVStioVyu9-uNgWxmG0akWheCpXk8njIxoHqhlTuaoeRbSI8pwa4wR9WtuN0GnoQ='
 
 client = TelegramClient(StringSession(SESSION), API_ID, API_HASH)
 
-if not os.path.exists(QUEUE_FILE):
-    with open(QUEUE_FILE, "w") as f:
-        json.dump({"messages": [], "targets": []}, f)
+# Глобальные переменные
+message_refs = []  # [(username, msg_id)]
+forward_enabled = False
+interval_minutes = 60
+json_file = 'messages.json'
+me_id = None
 
-def load_queue():
-    with open(QUEUE_FILE) as f:
-        return json.load(f)
+# === ФАЙЛ ===
+def save_messages():
+    with open(json_file, 'w', encoding='utf-8') as f:
+        json.dump(message_refs, f, ensure_ascii=False, indent=2)
 
-def save_queue(data):
-    with open(QUEUE_FILE, "w") as f:
-        json.dump(data, f)
+def load_messages():
+    global message_refs
+    if os.path.exists(json_file):
+        with open(json_file, 'r', encoding='utf-8') as f:
+            message_refs = json.load(f)
 
-@client.on(events.NewMessage(incoming=True, pattern=r"\.add"))
-async def add_handler(event):
-    if event.is_private:
-        queue = load_queue()
-        reply = await event.get_reply_message()
-        if reply:
-            queue["messages"].append(reply.id)
-            save_queue(queue)
-            await event.reply("✅ Добавлено.")
-        else:
-            await event.reply("❌ Ответь на сообщение командой .add")
+# === ЧАТЫ ===
+async def get_all_chats():
+    result = await client(GetDialogsRequest(
+        offset_date=None,
+        offset_id=0,
+        offset_peer=InputPeerEmpty(),
+        limit=100,
+        hash=0
+    ))
+    return result.chats
 
-@client.on(events.NewMessage(incoming=True, pattern=r"\.delete"))
-async def del_handler(event):
-    if event.is_private:
-        queue = load_queue()
-        if queue["messages"]:
-            removed = queue["messages"].pop()
-            save_queue(queue)
-            await event.reply(f"❌ Удалено сообщение ID: {removed}")
-        else:
-            await event.reply("📭 Очередь пуста.")
+# === ПЕРЕСЫЛКА ===
+async def forward_once():
+    if message_refs:
+        print(f"🔁 Пересылаю {len(message_refs)} сообщений...")
+        chats = await get_all_chats()
+        for chat in chats:
+            for username, msg_id in message_refs:
+                try:
+                    await client.forward_messages(chat.id, msg_id, from_peer=username)
+                    print(f"✅ Отправлено: https://t.me/{username}/{msg_id} в {chat.title}")
+                except Exception as e:
+                    print(f"⚠️ Ошибка при пересылке в {chat.id}: {e}")
 
-@client.on(events.NewMessage(incoming=True, pattern=r"\.help"))
-async def help_handler(event):
-    if event.is_private:
-        await event.reply(
-            "📌 Команды:\n"
-            ".add — добавить сообщение в очередь (ответом)\n"
-            ".delete — удалить последнее сообщение\n"
-            ".target — добавить чат в цели (ответом)\n"
-            ".help — показать справку"
-        )
-
-@client.on(events.NewMessage(incoming=True, pattern=r"\.target"))
-async def target_handler(event):
-    if event.is_private:
-        reply = await event.get_reply_message()
-        if reply and reply.chat_id:
-            queue = load_queue()
-            if reply.chat_id not in queue["targets"]:
-                queue["targets"].append(reply.chat_id)
-                save_queue(queue)
-                await event.reply("🎯 Цель добавлена.")
-            else:
-                await event.reply("⚠️ Уже в списке.")
-        else:
-            await event.reply("❌ Ответь на сообщение из нужного чата.")
-
-async def spam_loop():
+async def forward_loop():
+    global forward_enabled
     while True:
-        queue = load_queue()
-        if queue["messages"] and queue["targets"]:
-            for msg_id in queue["messages"]:
-                for chat_id in queue["targets"]:
-                    try:
-                        await client.forward_messages(chat_id, msg_id, entity="me")
-                    except Exception as e:
-                        print(f"[{datetime.now()}] Ошибка отправки: {e}")
-        await asyncio.sleep(DELAY_MINUTES * 60)
+        if forward_enabled and message_refs:
+            await forward_once()
+        await asyncio.sleep(interval_minutes * 60)
 
-async def main():
-    await client.connect()
-    if not await client.is_user_authorized():
-        print("❌ Сессия не авторизована!")
+# === КОМАНДЫ ===
+@client.on(events.NewMessage(pattern=r'\.botstart ?(\d+)?'))
+async def start(event):
+    if event.sender_id != me_id: return
+    global forward_enabled, interval_minutes
+    if event.pattern_match.group(1):
+        interval_minutes = int(event.pattern_match.group(1))
+    await forward_once()
+    forward_enabled = True
+    await event.reply(f"✅ Бот запущен. Пересылает каждые {interval_minutes} минут.")
+
+@client.on(events.NewMessage(pattern=r'\.botstop'))
+async def stop(event):
+    if event.sender_id != me_id: return
+    global forward_enabled
+    forward_enabled = False
+    await event.reply("🛑 Бот остановлен.")
+
+@client.on(events.NewMessage(pattern=r'\.add (.+)'))
+async def add_message(event):
+    if event.sender_id != me_id: return
+    url = event.pattern_match.group(1).strip()
+    match = re.match(r'https?://t\.me/([^/]+)/(\d+)', url)
+    if not match:
+        await event.reply("⚠️ Неверная ссылка. Пример: `.add https://t.me/канал/123`")
         return
+    username, msg_id = match.groups()
+    message_refs.append((username, int(msg_id)))
+    save_messages()
+    await event.reply(f"✅ Добавлено сообщение {msg_id} из @{username}")
 
-    print("✅ Бот запущен.")
-    await spam_loop()
 
-if __name__ == "__main__":
+@client.on(events.NewMessage(pattern=r'\.delete (\d+)'))
+async def delete_message(event):
+    if event.sender_id != me_id: return
+    index = int(event.pattern_match.group(1))
+    if 0 <= index < len(message_refs):
+        removed = message_refs.pop(index)
+        save_messages()
+        await event.reply(f"🗑️ Удалено: https://t.me/{removed[0]}/{removed[1]}")
+    else:
+        await event.reply("❌ Неверный индекс.")
+
+@client.on(events.NewMessage(pattern=r'\.list'))
+async def list_messages(event):
+    if event.sender_id != me_id: return
+    if not message_refs:
+        await event.reply("📭 Список пуст.")
+    else:
+        text = "📋 Список сообщений:\n"
+        for i, (username, msg_id) in enumerate(message_refs):
+            text += f"{i}. https://t.me/{username}/{msg_id}\n"
+        await event.reply(text)
+
+@client.on(events.NewMessage(pattern=r'\.help'))
+async def help_cmd(event):
+    if event.sender_id != me_id: return
+    await event.reply("""
+📖 Команды:
+
+.botstart [мин] — запустить пересылку
+.botstop — остановить
+.add <ссылка> — добавить сообщение
+.delete <номер> — удалить сообщение
+.list — список
+.help — помощь
+""")
+
+# === ЗАПУСК ===
+async def main():
+    global me_id
+    await client.start()
+    me = await client.get_me()
+    me_id = me.id
+    print(f"✅ Вошёл как @{me.username or me.id}")
+    load_messages()
+    await asyncio.gather(
+        client.run_until_disconnected(),
+        forward_loop()
+    )
+
+if __name__ == '__main__':
     asyncio.run(main())
