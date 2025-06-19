@@ -5,9 +5,9 @@ from telethon.tl.functions.messages import GetDialogsRequest
 from telethon.tl.types import InputPeerEmpty
 
 # 🔐 Настройки
-API_ID = 28949784
-API_HASH = '07accbfb7a4d822e85068eb4ef468647'
-SESSION = '1ApWapzMBu1mC7NROz6MD8405nz8KTtomJ0Ql-1msuUC3BHb3PEr4q6bTxlCvAdvYxw4aS9vmffu4SOVEqWCQ_AMy16tgZDjQLnBisWS3cOUlLPIThXT8EKqOqr6mrPmkOD2jNiIhMra-A8JAWQ1bo7g0EayoQkTv2VBGiaQ0IWqi3DASOlM7FnIFxTdr34Cv7WJJED1ajtRANBciOg-AAaEq0HodAmQ4KmLOdlec3jRHVRSSkIffyecEE0AUeX0mzZAqtC5LWFdjNfrblB9YgOTz4FKHS9kPVStioVyu9-uNgWxmG0akWheCpXk8njIxoHqhlTuaoeRbSI8pwa4wR9WtuN0GnoQ='
+API_ID = int(os.environ["API_ID"])
+API_HASH = os.environ["API_HASH"]
+SESSION = os.environ["SESSION"]
 
 client = TelegramClient(StringSession(SESSION), API_ID, API_HASH)
 
